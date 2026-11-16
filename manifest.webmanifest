@@ -1,0 +1,17 @@
+{
+  "name": "X01k-Challenge",
+  "short_name": "X01k",
+  "description": "Verwaltung der X01k-Darts-Challenge: alle Spieler gemeinsam gegen die große Zahl.",
+  "lang": "de",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#131614",
+  "theme_color": "#123d25",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
