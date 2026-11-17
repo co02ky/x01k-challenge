@@ -1,7 +1,7 @@
 // X01k-Challenge – Service Worker
 // Liefert die App aus dem Cache (offline) und holt im Hintergrund neue Versionen.
 // Nach einem Update: App einmal mit Internet öffnen, schließen und neu starten.
-const CACHE = 'x01k-v1';
+const CACHE = 'x01k-v21';
 const FILES = [
   './', './index.html', './manifest.webmanifest',
   './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png', './icons/apple-touch-icon.png',
