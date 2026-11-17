@@ -240,18 +240,39 @@ textarea{width:100%;min-height:11rem;font:.8rem/1.35 ui-monospace,Consolas,monos
 const DB={db:null,
   open(){return new Promise(res=>{try{const r=indexedDB.open('x01k',1);r.onupgradeneeded=()=>r.result.createObjectStore('kv');r.onsuccess=()=>{this.db=r.result;res(true)};r.onerror=()=>res(false)}catch(e){res(false)}})},
   get(k){return new Promise(res=>{if(!this.db)return res(null);try{const q=this.db.transaction('kv').objectStore('kv').get(k);q.onsuccess=()=>res(q.result??null);q.onerror=()=>res(null)}catch(e){res(null)}})},
-  set(k,v){try{if(this.db)this.db.transaction('kv','readwrite').objectStore('kv').put(v,k);else localStorage.setItem('x01k',JSON.stringify(v))}catch(e){}}
+  set(k,v){try{if(this.db)this.db.transaction('kv','readwrite').objectStore('kv').put(v,k);else localStorage.setItem('x01k',JSON.stringify(v))}catch(e){}},
+  write(puts,dels){return new Promise(res=>{if(!this.db)return res(false);try{const tx=this.db.transaction('kv','readwrite'),os=tx.objectStore('kv');for(const [k,v] of puts)os.put(v,k);for(const k of dels)os.delete(k);tx.oncomplete=()=>res(true);tx.onerror=tx.onabort=()=>res(false)}catch(e){res(false)}})},
+  getMany(keys){return new Promise(res=>{if(!this.db||!keys.length)return res([]);try{const tx=this.db.transaction('kv'),os=tx.objectStore('kv'),out=new Array(keys.length);keys.forEach((k,i)=>{const q=os.get(k);q.onsuccess=()=>{out[i]=q.result}});tx.oncomplete=()=>res(out);tx.onerror=()=>res([])}catch(e){res([])}})}
 };
 const TARGETS=[10100,50100,101000,201000,301000,401000,501000];
 const isEx=t=>t%1000!==0;
 const BAD=[163,166,169,172,173,175,176,178,179];
-const DEF={inputMode:'darts',theme:'system',font:'m',tiles:['avg','darts','avg100','score','s90','s130','s180'],wake:true};
+const DEF={inputMode:'darts',theme:'system',font:'m',tiles:['avg','darts','avg100','score','s90','s130','s180'],wake:'idle'};
 const defs=()=>JSON.parse(JSON.stringify(DEF));
-const normSet=s=>{s=s||{};const o={...defs(),...s};if(!s.tiles&&Array.isArray(s.tiles12))o.tiles=[...s.tiles12];delete o.tiles12;delete o.tiles34;return o};
+const normSet=s=>{s=s||{};const o={...defs(),...s};if(!s.tiles&&Array.isArray(s.tiles12))o.tiles=[...s.tiles12];delete o.tiles12;delete o.tiles34;if(o.wake===true)o.wake='idle';if(o.wake===false)o.wake='off';return o};
 let S={v:1,players:[],games:[],settings:defs()};
 let ui={screen:'home',gameId:null,sumId:null,ed:{darts:[],mod:1,total:''},newG:{target:101000,sel:[]},statPlayer:'all',statMode:'all',statPer:'monat',showArch:false,modal:null};
-let saveT;
-function save(){clearTimeout(saveT);saveT=setTimeout(()=>DB.set('state',S),120)}
+/* Speichern: Metadaten + Aufnahmen in Blöcken zu 500, geschrieben werden nur geänderte Blöcke */
+const CH=500,sigs=new Map();let saveT,saving=false,again=false;
+const sigOf=part=>{const l=part[part.length-1];return part.length+'|'+part[0].t+'|'+l.t+'|'+l.s+'|'+l.p};
+function save(){clearTimeout(saveT);saveT=setTimeout(flush,400)}
+async function flush(){if(saving){again=true;return}saving=true;
+  try{if(!DB.db){try{localStorage.setItem('x01k',JSON.stringify(S))}catch(e){}return}
+    const puts=[],seen=new Set(),games=[];
+    for(const g of S.games){const {visits,...h}=g,n=Math.ceil(visits.length/CH);h.chunks=n;games.push(h);
+      for(let i=0;i<n;i++){const k=`v:${g.id}:${i}`,part=visits.slice(i*CH,(i+1)*CH),sg=sigOf(part);seen.add(k);if(sigs.get(k)!==sg){puts.push([k,part]);sigs.set(k,sg)}}}
+    puts.push(['meta',{v:2,players:S.players,settings:S.settings,games}]);
+    const dels=[...sigs.keys()].filter(k=>!seen.has(k));dels.forEach(k=>sigs.delete(k));
+    if(!await DB.write(puts,dels))sigs.clear()}
+  finally{saving=false;if(again){again=false;flush()}}}
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'){clearTimeout(saveT);flush()}});
+async function loadAll(){const m=await DB.get('meta');
+  if(m&&Array.isArray(m.players)){const keys=[];m.games.forEach(g=>{for(let i=0;i<(g.chunks||0);i++)keys.push(`v:${g.id}:${i}`)});const parts=await DB.getMany(keys);let j=0;
+    m.games.forEach(g=>{g.visits=[];for(let i=0;i<(g.chunks||0);i++){const part=parts[j++]||[];for(const v of part)g.visits.push(v);if(part.length)sigs.set(`v:${g.id}:${i}`,sigOf(part))}delete g.chunks});
+    return {v:1,players:m.players,games:m.games,settings:m.settings}}
+  let st=await DB.get('state');if(!st){try{const l=localStorage.getItem('x01k');if(l)st=JSON.parse(l)}catch(e){}}
+  if(st&&Array.isArray(st.players)&&DB.db){S=st;await flush();await DB.write([],['state'])}
+  return st}
 
 /* ---------- Helfer ---------- */
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
@@ -268,7 +289,7 @@ const byName=(a,b)=>a.name.localeCompare(b.name,'de');
 const game=()=>S.games.find(g=>g.id===ui.gameId);
 const gTot=g=>g.visits.reduce((s,v)=>s+v.s,0);
 const lastT=g=>g.visits.length?g.visits[g.visits.length-1].t:g.created;
-const isIn=(g,p)=>g.visits.some(v=>v.p===p&&v.ci);
+const isIn=(g,p)=>{const a=gameAgg(g).per[p];return !!(a&&a.inn)};
 const dlabel=([s,m])=>s===0?'Miss':s===25?(m===2?'Bull':'25'):(m===2?'D':m===3?'T':'')+s;
 const clearEd=()=>{ui.ed={darts:[],mod:1,total:'',sel:null}};
 let toastT;
@@ -285,9 +306,13 @@ function addV(a,v){if(v.m==='d'){let ii=a.inn,bt=false;v.d.forEach(([s,m],i)=>{a
   if(!a.inn){a.preCum+=v.pre;if(v.ci){a.inn=true;a.dtc=a.preCum+1}}
   a.miss+=v.miss;if(v.m==='d')a.missKnown=true;
   if(v.s===180)a.s180++;else if(v.s>=130)a.s130++;else if(v.s>=90)a.s90++;if(v.s>a.hi)a.hi=v.s}
-function gameAgg(g){const per={};let tot=0,post=0,darts=0;g.parts.forEach(p=>per[p]=acc());
+function gameAgg0(g){const per={};let tot=0,post=0,darts=0;g.parts.forEach(p=>per[p]=acc());
   for(const v of g.visits){addV(per[v.p]||(per[v.p]=acc()),v);tot+=v.s;post+=v.n-v.pre;darts+=v.n}
   return {per,tot,post,darts,cavg:darts?tot/darts*3:null}}
+/* Ergebnis nur neu berechnen, wenn sich Aufnahmen oder Teilnehmer geändert haben */
+const aggC=new WeakMap();
+function gameAgg(g){const v=g.visits,l=v[v.length-1],key=v.length+'|'+(l?l.t+'|'+l.s+'|'+l.p:'')+'|'+g.parts.join();
+  const c=aggC.get(g);if(c&&c.key===key)return c.res;const res=gameAgg0(g);aggC.set(g,{key,res});return res}
 function avg100(a){let d=0,s=0;for(let i=a.vis.length-1;i>=0&&d<100;i--){const v=a.vis[i],pd=v.n;if(!pd)continue;const t=Math.min(pd,100-d);s+=v.s*t/pd;d+=t}return d?s/d*3:null}
 function gameDur(g){let d=0;for(let i=1;i<g.visits.length;i++)d+=Math.min(g.visits[i].t-g.visits[i-1].t,300000);return d}
 
@@ -486,7 +511,7 @@ function vSettings(){
     <section class="set"><h2>Darstellung</h2>
       <h3>Farbschema</h3>${radio('th','system',s.theme,'wie Gerät','setTheme')}${radio('th','dark',s.theme,'Dark Mode','setTheme')}${radio('th','light',s.theme,'Light Mode','setTheme')}
       <h3>Schriftgröße</h3>${radio('fs','s',s.font,'Klein','setFont')}${radio('fs','m',s.font,'Normal','setFont')}${radio('fs','l',s.font,'Groß','setFont')}${radio('fs','xl',s.font,'Sehr groß','setFont')}
-      <h3>Bildschirm</h3><label class="opt"><input type="checkbox" ${s.wake?'checked':''} data-a="wakeT">Bildschirm während der Challenge wach halten</label></section>
+      <h3>Bildschirm während der Challenge wach halten</h3>${radio('wk','idle',s.wake,'bis 5 Minuten nach der letzten Eingabe (akkuschonend)','setWake')}${radio('wk','always',s.wake,'immer','setWake')}${radio('wk','off',s.wake,'nie (es gilt der Bildschirm-Timeout von Android)','setWake')}</section>
     <section class="set"><h2>Spielerkacheln in der Spielansicht</h2>
       <h3>Kennzahlen in den Kacheln (${s.tiles.length} gewählt)</h3><div class="checks">${checks('tiles')}</div>
       <p class="muted small">Die Auswahl gilt für alle Kacheln, egal wie viele Spieler aktiv sind. Passt der Inhalt nicht in eine Kachel, wird er im Spiel automatisch verkleinert.</p>
@@ -521,12 +546,16 @@ function vModal(){const m=ui.modal;if(!m)return '';let h='';
 /* ---------- Rendern ---------- */
 const $app=document.getElementById('app');let lastScr=null;
 /* Kachelinhalte verkleinern, bis sie in ihren Platz passen */
-function fitTiles(){const ts=[...document.querySelectorAll('.tslot>.tile')];ts.forEach(t=>t.style.setProperty('--ts',1));
-  if(!ts.length||!getComputedStyle(ts[0].parentElement).contain.includes('size'))return;
-  const over=()=>ts.some(t=>t.scrollHeight>t.clientHeight+1);if(!over())return;
-  let lo=.25,hi=1;for(let k=0;k<9;k++){const m=(lo+hi)/2;ts.forEach(t=>t.style.setProperty('--ts',m));if(over())hi=m;else lo=m}ts.forEach(t=>t.style.setProperty('--ts',lo))}
+let fitKey='',fitVal=1;
+function fitTiles(){const ts=[...document.querySelectorAll('.tslot>.tile')];if(!ts.length)return;
+  if(!getComputedStyle(ts[0].parentElement).contain.includes('size')){ts.forEach(t=>t.style.setProperty('--ts',1));return}
+  const key=[innerWidth,innerHeight,S.settings.font,S.settings.tiles.join(),ts.map(t=>t.querySelector('header').textContent).join()].join('|');
+  if(key!==fitKey){ts.forEach(t=>t.style.setProperty('--ts',1));const over=()=>ts.some(t=>t.scrollHeight>t.clientHeight+1);let lo=1;
+    if(over()){lo=.25;let hi=1;for(let k=0;k<9;k++){const m=(lo+hi)/2;ts.forEach(t=>t.style.setProperty('--ts',m));if(over())hi=m;else lo=m}}
+    fitKey=key;fitVal=lo}
+  ts.forEach(t=>t.style.setProperty('--ts',fitVal))}
 window.addEventListener('resize',()=>{if(ui.screen==='game')fitTiles()});
-if(document.fonts)document.fonts.ready.then(()=>{if(ui.screen==='game')fitTiles()});
+if(document.fonts)document.fonts.ready.then(()=>{fitKey='';if(ui.screen==='game')fitTiles()});
 function render(){
   const keep=lastScr===ui.screen,sc=[...$app.querySelectorAll('.body,.board,.mod')].map(e=>e.scrollTop);
   let h;switch(ui.screen){case 'games':h=vGames();break;case 'new':h=vNew();break;case 'game':h=vGame();break;case 'sum':h=vSum();break;case 'players':h=vPlayers();break;case 'settings':h=vSettings();break;default:h=vHome()}
@@ -534,8 +563,12 @@ function render(){
   if(keep)[...$app.querySelectorAll('.body,.board,.mod')].forEach((e,i)=>{if(sc[i])e.scrollTop=sc[i]});
   if(ui.screen==='game')fitTiles();lastScr=ui.screen}
 function applyTheme(){const r=document.documentElement,t=S.settings.theme;if(t==='system')r.removeAttribute('data-theme');else r.setAttribute('data-theme',t);r.style.setProperty('--fs',({s:14,m:16,l:18,xl:20}[S.settings.font]||16)+'px')}
-let wl=null;
-async function wake(on){try{if(on&&S.settings.wake&&'wakeLock' in navigator){if(!wl){wl=await navigator.wakeLock.request('screen');wl.addEventListener('release',()=>{wl=null})}}else if(wl){await wl.release();wl=null}}catch(e){wl=null}}
+let wl=null,wlT=null;const WAKE_MIN=5;
+async function wake(on){clearTimeout(wlT);try{const m=S.settings.wake;
+  if(on&&m!=='off'&&'wakeLock' in navigator){if(!wl){wl=await navigator.wakeLock.request('screen');wl.addEventListener('release',()=>{wl=null})}
+    if(m==='idle')wlT=setTimeout(()=>wake(false),WAKE_MIN*60000)}
+  else if(wl){await wl.release();wl=null}}catch(e){wl=null}}
+document.addEventListener('pointerdown',()=>{if(ui.screen==='game'&&S.settings.wake==='idle')wake(true)},{passive:true});
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&ui.screen==='game')wake(true)});
 function go(){wake(ui.screen==='game');render()}
 
@@ -643,7 +676,7 @@ const A={
   tile(v){const [grp,k]=v.split(':'),arr=S.settings[grp],max=0,i=arr.indexOf(k);
     if(i>=0)arr.splice(i,1);else arr.push(k);save();render()},
   resetTiles(){S.settings.tiles=defs().tiles;save();render()},
-  wakeT(){S.settings.wake=!S.settings.wake;save();render()},
+  setWake(v){S.settings.wake=v;save();wake(ui.screen==='game');render()},
   exp(){ui.modal={type:'export'};render()},
   copy(){const t=document.getElementById('expta');t.select();try{navigator.clipboard.writeText(t.value).then(()=>toast('In die Zwischenablage kopiert.'),()=>toast('Der Text ist markiert. Bitte manuell kopieren.'))}catch(e){toast('Der Text ist markiert. Bitte manuell kopieren.')}},
   dl(){try{const b=new Blob([JSON.stringify(S)],{type:'application/json'}),u=URL.createObjectURL(b),a=document.createElement('a'),d=new Date();
@@ -659,8 +692,7 @@ document.addEventListener('click',e=>{const el=e.target.closest('[data-a]');if(!
 document.addEventListener('change',e=>{if(e.target.id!=='impfile'||!e.target.files[0])return;const r=new FileReader();r.onload=()=>{const t=document.getElementById('impta');if(t)t.value=r.result;A.doImp()};r.readAsText(e.target.files[0])});
 document.addEventListener('keydown',e=>{if(ui.modal&&ui.modal.type==='pstat'){if(e.key==='ArrowLeft')return A.pnav(-1);if(e.key==='ArrowRight')return A.pnav(1);if(e.key==='Escape')return A.closeM()}if(e.key!=='Enter')return;if(e.target.id==='np')A.addP();if(e.target.id==='pnew')A.pNew();if(e.target.id==='ngname')A.ngAdd()});
 
-(async()=>{await DB.open();let st=await DB.get('state');
-  if(!st){try{const l=localStorage.getItem('x01k');if(l)st=JSON.parse(l)}catch(e){}}
+(async()=>{await DB.open();const st=await loadAll();
   if(st&&Array.isArray(st.players))S=st;S.settings=normSet(S.settings);applyTheme();render();
   try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist()}catch(e){}
   if('serviceWorker' in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('sw.js').catch(()=>{})})();
